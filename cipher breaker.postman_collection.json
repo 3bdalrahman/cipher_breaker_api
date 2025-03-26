@@ -1,0 +1,39 @@
+{
+	"info": {
+		"_postman_id": "985c7cc0-4a43-43ab-81e7-914c8e905e83",
+		"name": "cipher breaker",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "38301132"
+	},
+	"item": [
+		{
+			"name": "get results",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"ciphertext\": \"Pm ol ohk hufaopun jvumpkluaphs av zhf, ol dyval pa pu jpwoly, aoha pz, if zv johunpun aol vykly vm aol slaalyz vm aol hswohila, aoha uva h dvyk jvbsk il thkl vba.\"\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://localhost:3000/api/break-cipher",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "3000",
+					"path": [
+						"api",
+						"break-cipher"
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}
