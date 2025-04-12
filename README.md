@@ -92,6 +92,18 @@ The system architecture consists of several components:
 
 You can use the included Postman collection to test the API.
 
+## Team
+
+This project was developed by:
+
+- **Abdulrhman Ahmed**
+  🔗[GitHub](https://github.com/3bdalrahman) | 🔗[LinkedIn](https://www.linkedin.com/in/abdulrhman-ahmed03/)
+
+- **Abdalla Gamal**
+  🔗[GitHub](https://github.com/) | 🔗[LinkedIn](https://www.linkedin.com/in//)
+- **Amr Matarek**
+  🔗[GitHub](https://github.com/Amr11matarek) | 🔗[LinkedIn](https://www.linkedin.com/in/amr-matarek-72839b244)
+
 ## License
 
 ISC
