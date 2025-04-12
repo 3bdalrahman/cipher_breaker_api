@@ -6,6 +6,8 @@
 
 import { VigenereBreaker } from './vigenere.js';
 import { CipherBreaker } from './combine caesar and rail fence.js';
+import fs from 'node:fs';
+import path from 'path';
 
 // Remove the hardcoded CIPHERTEXT constant
 // const CIPHERTEXT = "Kw ft ail cewiaqvi tmcyqlgerxtt bq jyn, am etfrt bb qp tgeamz, vyyi ba, ja jm raivizlv mpm qibtk wn vyc axbbgiq dy bpg rjeaijgk, rwtb vqk y lhzl efsaw jm orbt hcb.";
@@ -15,18 +17,39 @@ export class UniversalCipherBreaker {
         this.vigenereBreaker = new VigenereBreaker();
         this.classicBreaker = new CipherBreaker();
         
+        // Define validity thresholds for simple ciphers
+        this.thresholds = {
+            confidenceThreshold: 0.9,  // 90% confidence threshold for immediate success
+            caesar: 0.7,      // Normalized score threshold for Caesar cipher
+            railFence: 0.65,  // Normalized score threshold for Rail Fence cipher
+            vigenere: 0.5,    // Normalized score threshold for Vigenère cipher
+        };
+        
         // Adjusted scoring weights to favor simpler methods when they produce valid results
         this.scoreWeights = {
-            caesar: 1.2,      // Increased weight for Caesar when clear text is found
-            railFence: 0.7,   // Lower weight for Rail Fence
-            vigenere: 0.9     // Slightly reduced weight for Vigenère to prevent false positives
+            caesar: 1.2,      // Base priority for Caesar
+            railFence: 0.8,   // Slightly lower weight for Rail Fence
+            vigenere: 0.7     // Lowest weight for Vigenère
         };
-
-        // Thresholds for valid decryption
-        this.thresholds = {
-            validWordPercentage: 40,
-            minimumScore: 50
-        };
+        
+        // Load Words.json dictionary
+        try {
+            const wordsPath = path.resolve('./Words.json');
+            const wordsContent = fs.readFileSync(wordsPath, 'utf8');
+            const wordsData = JSON.parse(wordsContent);
+            
+            // Extract the commonWords array from the JSON structure
+            if (wordsData.commonWords && Array.isArray(wordsData.commonWords)) {
+                this.wordsDictionary = new Set(wordsData.commonWords);
+                console.log(`Loaded ${this.wordsDictionary.size} words from Words.json`);
+            } else {
+                throw new Error('Words.json must contain a commonWords array');
+            }
+        } catch (error) {
+            console.error(`Error loading Words.json: ${error.message}`);
+            // Fallback to existing dictionaries if Words.json fails to load
+            this.wordsDictionary = null;
+        }
     }
 
     normalizeScore(method, rawScore, options = {}) {
@@ -61,6 +84,61 @@ export class UniversalCipherBreaker {
         }
     }
 
+    /**
+     * Validates decrypted text by calculating the ratio of valid English words
+     * @param {string} text - Decrypted text to validate
+     * @returns {Object} - Object containing confidence score and valid/invalid word counts
+     */
+    validateText(text) {
+        if (!text) return { confidence: 0, validWords: 0, totalWords: 0, invalidWords: [] };
+        
+        // Extract words from text, ignoring punctuation and case
+        const words = text.split(/\s+/).filter(word => word.length > 0).map(word => {
+            return word.replace(/[^a-zA-Z]/g, '').toUpperCase();
+        }).filter(word => word.length > 0);
+        
+        if (words.length === 0) return { confidence: 0, validWords: 0, totalWords: 0, invalidWords: [] };
+        
+        // Determine which dictionary to use
+        let dictionary;
+        if (this.wordsDictionary && this.wordsDictionary.size > 0) {
+            // Use Words.json if available
+            dictionary = this.wordsDictionary;
+        } else {
+            // Fallback to combined dictionary from breakers
+            dictionary = new Set([
+                ...this.vigenereBreaker.commonWords || [],
+                ...(this.classicBreaker.commonWords || [])
+            ]);
+        }
+        
+        // Count valid words
+        const invalidWords = [];
+        let validCount = 0;
+        
+        for (const word of words) {
+            if (dictionary.has(word)) {
+                validCount++;
+            } else {
+                invalidWords.push(word);
+            }
+        }
+        
+        const confidence = validCount / words.length;
+        
+        return {
+            confidence,
+            validWords: validCount,
+            totalWords: words.length,
+            invalidWords
+        };
+    }
+
+    /**
+     * Main method to break ciphers, prioritizing simpler methods first
+     * @param {string} ciphertext - The encrypted text to break
+     * @returns {Object} - Decryption result with method, text, confidence, and parameters
+     */
     async breakCipher(ciphertext) {
         if (!ciphertext || typeof ciphertext !== 'string') {
             throw new Error('Invalid ciphertext provided');
@@ -71,123 +149,203 @@ export class UniversalCipherBreaker {
         
         const results = [];
         
-        // Try Caesar cipher first
-        console.log("Attempting Caesar cipher decryption...");
+        // Step 1: Try Caesar cipher first (simplest approach)
+        console.log("ATTEMPT 1: Caesar cipher decryption...");
         try {
             const caesarResult = this.classicBreaker.breakCaesar(ciphertext);
             
-            // Ensure caesarResult has the required properties
-            if (caesarResult && caesarResult.text && typeof caesarResult.shift === 'number') {
-                const normalizedScore = this.normalizeScore('caesar', caesarResult.score, {
-                    preservesSpaces: true
-                });
-
+            if (caesarResult && caesarResult.text) {
+                // Validate the Caesar result
+                const validation = this.validateText(caesarResult.text);
+                
+                // Add result to our collection
                 results.push({
                     method: 'Caesar',
-                    key: caesarResult.shift,
+                    key: caesarResult.shift.toString(),
                     decrypted: caesarResult.text,
                     rawScore: caesarResult.score,
-                    normalizedScore,
+                    confidence: validation.confidence,
                     additionalInfo: {
-                        shiftValue: caesarResult.shift
+                        shiftValue: caesarResult.shift,
+                        validWords: validation.validWords,
+                        totalWords: validation.totalWords,
+                        invalidWords: validation.invalidWords
                     }
                 });
-
+                
                 console.log(`Caesar analysis complete:`);
                 console.log(`  Shift: ${caesarResult.shift}`);
                 console.log(`  Raw score: ${caesarResult.score.toFixed(2)}`);
-                console.log(`  Normalized score: ${normalizedScore.toFixed(3)}`);
+                console.log(`  Confidence: ${(validation.confidence * 100).toFixed(1)}% (${validation.validWords}/${validation.totalWords} valid words)`);
                 console.log(`  Sample: "${caesarResult.text.substring(0, 50)}..."\n`);
-            } else {
-                throw new Error('Invalid Caesar result structure');
+                
+                // If confidence meets threshold, return immediately
+                if (validation.confidence >= this.thresholds.confidenceThreshold) {
+                    console.log(`✓ Caesar decryption successful with ${(validation.confidence * 100).toFixed(1)}% confidence!`);
+                    
+                    return {
+                        success: true,
+                        method: 'Caesar',
+                        decrypted: caesarResult.text,
+                        confidence: validation.confidence,
+                        key: caesarResult.shift.toString(),
+                        params: { shift: caesarResult.shift },
+                        details: validation
+                    };
+                } else {
+                    console.log(`✗ Caesar confidence ${(validation.confidence * 100).toFixed(1)}% below threshold ${(this.thresholds.confidenceThreshold * 100).toFixed(1)}%, trying next method`);
+                }
             }
         } catch (error) {
             console.log("Warning: Caesar decryption failed:", error.message);
         }
 
-        // Try Rail Fence if Caesar score isn't conclusive
-        const bestCaesarScore = results[0]?.normalizedScore || 0;
-        if (bestCaesarScore < 0.7) {
-            console.log("Attempting Rail Fence decryption...");
-            try {
-                const railFenceResult = this.classicBreaker.breakRailFence(ciphertext);
+        // Step 2: Try Rail Fence if Caesar didn't meet threshold
+        console.log("ATTEMPT 2: Rail Fence decryption...");
+        try {
+            const railFenceResult = this.classicBreaker.breakRailFence(ciphertext);
+            
+            if (railFenceResult && railFenceResult.text) {
+                // Validate the Rail Fence result
+                const validation = this.validateText(railFenceResult.text);
                 
-                if (railFenceResult && railFenceResult.text) {
-                    const normalizedScore = this.normalizeScore('railFence', railFenceResult.score, {
-                        preservesSpaces: true
-                    });
-
-                    results.push({
+                // Add result to our collection
+                results.push({
+                    method: 'Rail Fence',
+                    key: railFenceResult.rails.toString(),
+                    decrypted: railFenceResult.text,
+                    rawScore: railFenceResult.score,
+                    confidence: validation.confidence,
+                    additionalInfo: {
+                        rails: railFenceResult.rails,
+                        validWords: validation.validWords,
+                        totalWords: validation.totalWords,
+                        invalidWords: validation.invalidWords
+                    }
+                });
+                
+                console.log(`Rail Fence analysis complete:`);
+                console.log(`  Rails: ${railFenceResult.rails}`);
+                console.log(`  Raw score: ${railFenceResult.score.toFixed(2)}`);
+                console.log(`  Confidence: ${(validation.confidence * 100).toFixed(1)}% (${validation.validWords}/${validation.totalWords} valid words)`);
+                console.log(`  Sample: "${railFenceResult.text.substring(0, 50)}..."\n`);
+                
+                // If confidence meets threshold, return immediately
+                if (validation.confidence >= this.thresholds.confidenceThreshold) {
+                    console.log(`✓ Rail Fence decryption successful with ${(validation.confidence * 100).toFixed(1)}% confidence!`);
+                    
+                    return {
+                        success: true,
                         method: 'Rail Fence',
-                        key: railFenceResult.rails,
                         decrypted: railFenceResult.text,
-                        rawScore: railFenceResult.score,
-                        normalizedScore,
-                        additionalInfo: {
-                            rails: railFenceResult.rails
-                        }
-                    });
-
-                    console.log(`Rail Fence analysis complete:`);
-                    console.log(`  Rails: ${railFenceResult.rails}`);
-                    console.log(`  Raw score: ${railFenceResult.score.toFixed(2)}`);
-                    console.log(`  Normalized score: ${normalizedScore.toFixed(3)}\n`);
+                        confidence: validation.confidence,
+                        key: railFenceResult.rails.toString(),
+                        params: { rails: railFenceResult.rails },
+                        details: validation
+                    };
+                } else {
+                    console.log(`✗ Rail Fence confidence ${(validation.confidence * 100).toFixed(1)}% below threshold ${(this.thresholds.confidenceThreshold * 100).toFixed(1)}%, trying next method`);
                 }
-            } catch (error) {
-                console.log("Warning: Rail Fence decryption failed:", error.message);
             }
+        } catch (error) {
+            console.log("Warning: Rail Fence decryption failed:", error.message);
         }
 
-        // Try Vigenère only if simpler methods don't yield good results
-        const bestSimpleScore = Math.max(...results.map(r => r.normalizedScore));
-        if (bestSimpleScore < 0.6) {
-            try {
-                console.log("Attempting Vigenère decryption...");
-                const vigenereResult = await this.vigenereBreaker.breakVigenere(ciphertext);
+        // Step 3: Try Vigenère as last resort
+        console.log("ATTEMPT 3: Vigenère decryption...");
+        try {
+            const vigenereResult = await this.vigenereBreaker.breakVigenere(ciphertext);
+            
+            if (vigenereResult && vigenereResult.decrypted) {
+                // For Vigenère, use the validation from the breaker if available, otherwise validate ourselves
+                let validation;
+                if (vigenereResult.validation && typeof vigenereResult.validation.percentage === 'number') {
+                    validation = {
+                        confidence: vigenereResult.validation.percentage / 100,
+                        validWords: Math.round(vigenereResult.validation.percentage * 0.01 * vigenereResult.decrypted.split(/\s+/).length),
+                        totalWords: vigenereResult.decrypted.split(/\s+/).length,
+                        invalidWords: vigenereResult.validation.invalidWords || []
+                    };
+                } else {
+                    validation = this.validateText(vigenereResult.decrypted);
+                }
                 
-                if (vigenereResult && vigenereResult.decrypted) {
-                    const normalizedScore = this.normalizeScore('vigenere', vigenereResult.score, {
-                        validWordPercentage: vigenereResult.validation?.percentage,
-                        preservesSpaces: true
-                    });
-
-                    results.push({
+                // Add result to our collection
+                results.push({
+                    method: 'Vigenère',
+                    key: vigenereResult.key,
+                    decrypted: vigenereResult.decrypted,
+                    rawScore: vigenereResult.score,
+                    confidence: validation.confidence,
+                    additionalInfo: {
+                        validWords: validation.validWords,
+                        totalWords: validation.totalWords,
+                        invalidWords: validation.invalidWords
+                    }
+                });
+                
+                console.log(`Vigenère analysis complete:`);
+                console.log(`  Key: ${vigenereResult.key}`);
+                console.log(`  Raw score: ${vigenereResult.score.toFixed(2)}`);
+                console.log(`  Confidence: ${(validation.confidence * 100).toFixed(1)}% (${validation.validWords}/${validation.totalWords} valid words)`);
+                console.log(`  Sample: "${vigenereResult.decrypted.substring(0, 50)}..."\n`);
+                
+                // If confidence meets threshold, return immediately
+                if (validation.confidence >= this.thresholds.confidenceThreshold) {
+                    console.log(`✓ Vigenère decryption successful with ${(validation.confidence * 100).toFixed(1)}% confidence!`);
+                    
+                    return {
+                        success: true,
                         method: 'Vigenère',
-                        key: vigenereResult.key,
                         decrypted: vigenereResult.decrypted,
-                        rawScore: vigenereResult.score,
-                        normalizedScore,
-                        additionalInfo: {
-                            validWordPercentage: vigenereResult.validation?.percentage,
-                            invalidWords: vigenereResult.validation?.invalidWords
-                        }
-                    });
-
-                    console.log(`Vigenère analysis complete:`);
-                    console.log(`  Key: ${vigenereResult.key}`);
-                    console.log(`  Raw score: ${vigenereResult.score.toFixed(2)}`);
-                    console.log(`  Normalized score: ${normalizedScore.toFixed(3)}`);
-                    console.log(`  Valid words: ${vigenereResult.validation?.percentage.toFixed(1)}%\n`);
+                        confidence: validation.confidence,
+                        key: vigenereResult.key,
+                        params: { key: vigenereResult.key },
+                        details: validation
+                    };
+                } else {
+                    console.log(`✗ Vigenère confidence ${(validation.confidence * 100).toFixed(1)}% below threshold ${(this.thresholds.confidenceThreshold * 100).toFixed(1)}%`);
                 }
-            } catch (error) {
-                console.log("Warning: Vigenère decryption failed:", error.message);
             }
+        } catch (error) {
+            console.log("Warning: Vigenère decryption failed:", error.message);
         }
 
-        // Filter and sort results
-        const validResults = results
-            .filter(r => r.normalizedScore >= 0.1)
-            .sort((a, b) => b.normalizedScore - a.normalizedScore);
-
-        if (validResults.length === 0) {
+        // Fallback: If no method reached the confidence threshold, return the best result
+        console.log("\n=== No method reached the confidence threshold ===");
+        console.log("Returning the best scoring result from all attempts.");
+        
+        if (results.length === 0) {
+            console.log("No valid decryption results found.");
             throw new Error('No valid decryption results found');
         }
-
-        // Display final results
-        this.displayResults(validResults);
-
-        // Return all valid results instead of just the first one
-        return validResults;
+        
+        // Sort results by confidence score
+        results.sort((a, b) => b.confidence - a.confidence);
+        const bestResult = results[0];
+        
+        console.log(`\nBest result found:`);
+        console.log(`  Method: ${bestResult.method}`);
+        console.log(`  Key: ${bestResult.key}`);
+        console.log(`  Confidence: ${(bestResult.confidence * 100).toFixed(1)}%`);
+        console.log(`  Decrypted text: "${bestResult.decrypted.substring(0, 100)}${bestResult.decrypted.length > 100 ? '...' : ''}"`);
+        
+        // Return in standardized format
+        return {
+            success: false,  // Indicates confidence threshold wasn't met
+            method: bestResult.method,
+            decrypted: bestResult.decrypted,
+            confidence: bestResult.confidence,
+            key: bestResult.key,
+            params: bestResult.method === 'Caesar' ? { shift: parseInt(bestResult.key) } :
+                    bestResult.method === 'Rail Fence' ? { rails: parseInt(bestResult.key) } :
+                    { key: bestResult.key },
+            details: {
+                validWords: bestResult.additionalInfo.validWords,
+                totalWords: bestResult.additionalInfo.totalWords,
+                invalidWords: bestResult.additionalInfo.invalidWords
+            }
+        };
     }
 
     displayResults(results) {

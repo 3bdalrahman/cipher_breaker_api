@@ -37,46 +37,47 @@ app.post('/api/break-cipher', async (req, res) => {
             });
         }
 
-        // Get all results from the cipher breaker
-        const results = await breaker.breakCipher(ciphertext);
+        // Get result from the cipher breaker
+        const result = await breaker.breakCipher(ciphertext);
         
-        // Ensure results is an array
-        const resultsArray = Array.isArray(results) ? results : [results];
-        
-        // Format the final analysis results
-        const finalAnalysis = resultsArray.map((result, index) => ({
-            rank: index + 1,
-            method: `${result.method} Cipher`,
-            key: formatKey(result),
-            confidence: `${(result.normalizedScore * 100).toFixed(1)}%`,
-            rawScore: result.rawScore.toFixed(2),
-            validWords: result.additionalInfo?.validWordPercentage 
-                ? `${result.additionalInfo.validWordPercentage.toFixed(1)}%` 
-                : undefined,
-            decryptedText: result.decrypted
-        }));
-
-        // Format the response while maintaining the original structure
+        // Format the response based on the new structure
         const response = {
-            success: true,
-            results: resultsArray.map(result => ({
+            success: result.success,
+            result: {
                 method: result.method,
-                key: result.key,
+                key: formatKey({
+                    method: result.method,
+                    key: result.key
+                }),
                 decrypted: result.decrypted,
-                rawScore: result.rawScore,
-                normalizedScore: result.normalizedScore,
+                confidence: result.confidence,
+                params: result.params,
                 additionalInfo: {
-                    ...result.additionalInfo,
-                    validWordPercentage: result.additionalInfo?.validWordPercentage,
-                    shiftValue: result.additionalInfo?.shiftValue,
-                    rails: result.additionalInfo?.rails
+                    validWords: result.details?.validWords || 0,
+                    totalWords: result.details?.totalWords || 0,
+                    validWordPercentage: result.confidence * 100
                 }
-            })),
-            finalAnalysis: {
-                title: "Final Analysis Results",
-                subtitle: "Ranked by confidence score",
-                candidates: finalAnalysis
             }
+        };
+
+        // Add final analysis for UI display
+        response.finalAnalysis = {
+            title: "Final Analysis Results",
+            subtitle: result.success ? 
+                "Decryption successful with high confidence" : 
+                "Best possible decryption (below confidence threshold)",
+            candidates: [{
+                rank: 1,
+                method: `${result.method} Cipher`,
+                key: formatKey({
+                    method: result.method,
+                    key: result.key
+                }),
+                confidence: `${(result.confidence * 100).toFixed(1)}%`,
+                validWords: `${result.details?.validWords || 0}/${result.details?.totalWords || 0}`,
+                validWordPercentage: `${(result.confidence * 100).toFixed(1)}%`,
+                decryptedText: result.decrypted
+            }]
         };
 
         res.json(response);
