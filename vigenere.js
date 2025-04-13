@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import natural from 'natural';
 import wordListPath from 'word-list';
+import path from 'path';
 
 export class VigenereBreaker {
     constructor() {
@@ -16,6 +17,24 @@ export class VigenereBreaker {
         
         // Initialize tokenizer as class property
         this.tokenizer = new natural.WordTokenizer();
+        
+        // Load known Vigenère keys from vk.json
+        try {
+            const vkPath = path.resolve('./VK.json');
+            const vkContent = fs.readFileSync(vkPath, 'utf8');
+            const vkData = JSON.parse(vkContent);
+            
+            // Extract the keys array from the JSON structure
+            if (vkData.keys && Array.isArray(vkData.keys)) {
+                this.knownKeys = vkData.keys;
+                console.log(`Loaded ${this.knownKeys.length} known Vigenère keys from VK.json`);
+            } else {
+                throw new Error('VK.json must contain a keys array');
+            }
+        } catch (error) {
+            console.error(`Error loading VK.json: ${error.message}`);
+            this.knownKeys = [];
+        }
     }
 
     // English letter frequency for scoring
@@ -554,11 +573,69 @@ export class VigenereBreaker {
     }
 
     /**
-     * Modified breakVigenere function with random key handling
+     * Try to break Vigenère cipher using known keys from vk.json
+     * @param {string} ciphertext - The text to decrypt
+     * @returns {Array} - Array of candidates from known keys
+     */
+    tryKnownKeys(ciphertext) {
+        console.log("Trying known Vigenère keys from VK.json...");
+        const candidates = [];
+        const dictionarySet = this.createDictionarySet();
+        
+        // If knownKeys not loaded properly, return empty array
+        if (!this.knownKeys || this.knownKeys.length === 0) {
+            console.log("No known keys available, skipping this step");
+            return candidates;
+        }
+        
+        console.log(`Testing ${this.knownKeys.length} known keys...`);
+        const progressInterval = 100;
+        
+        for (let i = 0; i < this.knownKeys.length; i++) {
+            const key = this.knownKeys[i];
+            
+            // Skip keys that are too short
+            if (key.length < 3) continue;
+            
+            const decryption = this.decryptVigenere(ciphertext, key);
+            const validation = this.validateDecryptedText(decryption, dictionarySet);
+            const score = this.scoreText(decryption);
+            
+            candidates.push({
+                key: key,
+                decrypted: decryption,
+                score: score,
+                validation,
+                refined: false,
+                fromKnownKeys: true
+            });
+            
+            // If we found a highly valid decryption, log it
+            if (validation.isValid) {
+                console.log(`\nFound potentially valid decryption with known key "${key}":`);
+                console.log(`Decrypted: "${decryption}"`);
+                console.log(`Valid words: ${validation.percentage.toFixed(1)}%`);
+            }
+            
+            // Progress update
+            if ((i + 1) % progressInterval === 0) {
+                console.log(`Tested ${i + 1} known keys (${((i + 1) / this.knownKeys.length * 100).toFixed(1)}%)...`);
+            }
+        }
+        
+        return candidates;
+    }
+
+    /**
+     * Modified breakVigenere function that includes trying known keys from vk.json
      */
     async breakVigenere(ciphertext) {
         console.log("Initializing dictionary set...");
         const dictionarySet = this.createDictionarySet();
+        
+        // Step 0: Try known keys from VK.json
+        console.log("Step 0: Trying known keys from VK.json...");
+        const knownKeyCandidates = this.tryKnownKeys(ciphertext);
         
         console.log("Step 1: Trying dictionary attack...");
         const candidates = [];
@@ -605,26 +682,29 @@ export class VigenereBreaker {
             }
         }
         
+        // Combine known key candidates with dictionary candidates
+        const allCandidates = [...knownKeyCandidates, ...candidates];
+        
         // Sort candidates by score and validation percentage
-        candidates.sort((a, b) => {
+        allCandidates.sort((a, b) => {
             if (a.validation.isValid && !b.validation.isValid) return -1;
             if (!a.validation.isValid && b.validation.isValid) return 1;
             return b.score - a.score;
         });
         
         // Check if we found any valid solutions
-        const validCandidates = candidates.filter(c => c.validation.isValid);
+        const validCandidates = allCandidates.filter(c => c.validation.isValid);
         if (validCandidates.length > 0) {
             console.log("\nFound valid solutions without need for refinement!");
             return validCandidates[0];
         }
         
         // Check if dictionary attack was successful
-        const bestDictionaryCandidate = candidates[0];
-        const dictionaryAttackSuccessful = bestDictionaryCandidate.score > 700 && 
-                                         bestDictionaryCandidate.validation.percentage > 70;
+        const bestCandidate = allCandidates[0];
+        const attackSuccessful = bestCandidate.score > 700 && 
+                                 bestCandidate.validation.percentage > 70;
         
-        if (!dictionaryAttackSuccessful) {
+        if (!attackSuccessful) {
             console.log("\nDictionary attack unsuccessful. Switching to systematic key search...");
             
             // Estimate likely key lengths
@@ -703,7 +783,7 @@ export class VigenereBreaker {
             return allCandidates[0];
         }
         
-        // If dictionary attack was successful, continue with original code
-        // ... [Rest of the original code remains the same]
+        // Return the best candidate
+        return bestCandidate;
     }
 }
