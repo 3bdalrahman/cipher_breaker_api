@@ -14,8 +14,32 @@ import path from 'path';
 
 export class UniversalCipherBreaker {
     constructor() {
-        this.vigenereBreaker = new VigenereBreaker();
-        this.classicBreaker = new CipherBreaker();
+        // Load Words.json dictionary first so we can pass it to the breakers
+        try {
+            const wordsPath = path.resolve('./Words.json');
+            const wordsContent = fs.readFileSync(wordsPath, 'utf8');
+            const wordsData = JSON.parse(wordsContent);
+            
+            // Extract the commonWords array from the JSON structure
+            if (wordsData.commonWords && Array.isArray(wordsData.commonWords)) {
+                this.wordsDictionary = wordsData.commonWords;
+                console.log(`Loaded ${this.wordsDictionary.length} words from Words.json`);
+            } else {
+                throw new Error('Words.json must contain a commonWords array');
+            }
+        } catch (error) {
+            console.error(`Error loading Words.json: ${error.message}`);
+            this.wordsDictionary = null;
+        }
+        
+        // Initialize breakers with the dictionary if available
+        this.vigenereBreaker = new VigenereBreaker(this.wordsDictionary);
+        this.classicBreaker = new CipherBreaker(this.wordsDictionary);
+        
+        // Create a Set for word validation
+        if (this.wordsDictionary) {
+            this.wordsDictionarySet = new Set(this.wordsDictionary.map(word => word.toUpperCase()));
+        }
         
         // Define validity thresholds for simple ciphers
         this.thresholds = {
@@ -31,25 +55,6 @@ export class UniversalCipherBreaker {
             railFence: 0.8,   // Slightly lower weight for Rail Fence
             vigenere: 0.7     // Lowest weight for Vigenère
         };
-        
-        // Load Words.json dictionary
-        try {
-            const wordsPath = path.resolve('./Words.json');
-            const wordsContent = fs.readFileSync(wordsPath, 'utf8');
-            const wordsData = JSON.parse(wordsContent);
-            
-            // Extract the commonWords array from the JSON structure
-            if (wordsData.commonWords && Array.isArray(wordsData.commonWords)) {
-                this.wordsDictionary = new Set(wordsData.commonWords);
-                console.log(`Loaded ${this.wordsDictionary.size} words from Words.json`);
-            } else {
-                throw new Error('Words.json must contain a commonWords array');
-            }
-        } catch (error) {
-            console.error(`Error loading Words.json: ${error.message}`);
-            // Fallback to existing dictionaries if Words.json fails to load
-            this.wordsDictionary = null;
-        }
     }
 
     normalizeScore(method, rawScore, options = {}) {
@@ -101,9 +106,9 @@ export class UniversalCipherBreaker {
         
         // Determine which dictionary to use
         let dictionary;
-        if (this.wordsDictionary && this.wordsDictionary.size > 0) {
+        if (this.wordsDictionarySet && this.wordsDictionarySet.size > 0) {
             // Use Words.json if available
-            dictionary = this.wordsDictionary;
+            dictionary = this.wordsDictionarySet;
         } else {
             // Fallback to combined dictionary from breakers
             dictionary = new Set([

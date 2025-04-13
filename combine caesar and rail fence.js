@@ -1,5 +1,5 @@
 export class CipherBreaker {
-    constructor() {
+    constructor(externalDictionary = null) {
         this.englishFrequencies = {
             'E': 12.7, 'T': 9.1, 'A': 8.2, 'O': 7.5, 'I': 7.0,
             'N': 6.7, 'S': 6.3, 'H': 6.1, 'R': 6.0, 'D': 4.3,
@@ -72,6 +72,14 @@ export class CipherBreaker {
             'THERE', 'HERE', 'WHERE', 'WHEN',
             'ABOUT', 'AFTER', 'BEFORE', 'BETWEEN'
         ]);
+
+        // Use external dictionary if provided (Words.json)
+        if (externalDictionary && Array.isArray(externalDictionary)) {
+            this.externalDictionary = new Set(externalDictionary.map(word => word.toUpperCase()));
+            console.log(`CipherBreaker: Using ${this.externalDictionary.size} words from external dictionary (Words.json)`);
+        } else {
+            this.externalDictionary = null;
+        }
     }
 
     // Caesar Cipher Methods
@@ -250,5 +258,15 @@ export class CipherBreaker {
             }
             return railFenceResult;
         }
+    }
+
+    // Modify validation methods to use the external dictionary
+    validateWords(text) {
+        // ... existing code ...
+        
+        // Use external dictionary if available
+        const dictionary = this.externalDictionary || this.defaultDictionary;
+        
+        // ... rest of validation code ...
     }
 }

@@ -7,15 +7,42 @@
 import fs from 'node:fs';
 import natural from 'natural';
 import wordListPath from 'word-list';
+import path from 'path';
 
 export class VigenereBreaker {
-    constructor() {
+    constructor(externalDictionary = null) {
         // Move the dictionary loading into the constructor
         this.words = fs.readFileSync(wordListPath, 'utf8').split('\n');
         console.log(`Loaded ${this.words.length} words from dictionary`);
         
         // Initialize tokenizer as class property
         this.tokenizer = new natural.WordTokenizer();
+        
+        // Use external dictionary if provided (Words.json)
+        if (externalDictionary && Array.isArray(externalDictionary)) {
+            this.externalDictionary = new Set(externalDictionary.map(word => word.toUpperCase()));
+            console.log(`Using ${this.externalDictionary.size} words from external dictionary (Words.json)`);
+        } else {
+            this.externalDictionary = null;
+        }
+        
+        // Load known Vigenère keys from vk.json
+        try {
+            const vkPath = path.resolve('./VK.json');
+            const vkContent = fs.readFileSync(vkPath, 'utf8');
+            const vkData = JSON.parse(vkContent);
+            
+            // Extract the keys array from the JSON structure
+            if (vkData.keys && Array.isArray(vkData.keys)) {
+                this.knownKeys = vkData.keys;
+                console.log(`Loaded ${this.knownKeys.length} known Vigenère keys from VK.json`);
+            } else {
+                throw new Error('VK.json must contain a keys array');
+            }
+        } catch (error) {
+            console.error(`Error loading VK.json: ${error.message}`);
+            this.knownKeys = [];
+        }
     }
 
     // English letter frequency for scoring
@@ -434,7 +461,12 @@ export class VigenereBreaker {
      * @returns {Set} Set of valid English words
      */
     createDictionarySet() {
-        // Combine common words and dictionary words
+        // If external dictionary is available, use it
+        if (this.externalDictionary && this.externalDictionary.size > 0) {
+            return this.externalDictionary;
+        }
+        
+        // Otherwise, combine common words and dictionary words
         return new Set([
             ...this.commonWords,
             ...this.words.filter(w => w.length >= 2).map(w => w.toUpperCase())
@@ -554,11 +586,69 @@ export class VigenereBreaker {
     }
 
     /**
-     * Modified breakVigenere function with random key handling
+     * Try to break Vigenère cipher using known keys from vk.json
+     * @param {string} ciphertext - The text to decrypt
+     * @returns {Array} - Array of candidates from known keys
+     */
+    tryKnownKeys(ciphertext) {
+        console.log("Trying known Vigenère keys from VK.json...");
+        const candidates = [];
+        const dictionarySet = this.createDictionarySet();
+        
+        // If knownKeys not loaded properly, return empty array
+        if (!this.knownKeys || this.knownKeys.length === 0) {
+            console.log("No known keys available, skipping this step");
+            return candidates;
+        }
+        
+        console.log(`Testing ${this.knownKeys.length} known keys...`);
+        const progressInterval = 100;
+        
+        for (let i = 0; i < this.knownKeys.length; i++) {
+            const key = this.knownKeys[i];
+            
+            // Skip keys that are too short
+            if (key.length < 3) continue;
+            
+            const decryption = this.decryptVigenere(ciphertext, key);
+            const validation = this.validateDecryptedText(decryption, dictionarySet);
+            const score = this.scoreText(decryption);
+            
+            candidates.push({
+                key: key,
+                decrypted: decryption,
+                score: score,
+                validation,
+                refined: false,
+                fromKnownKeys: true
+            });
+            
+            // If we found a highly valid decryption, log it
+            if (validation.isValid) {
+                console.log(`\nFound potentially valid decryption with known key "${key}":`);
+                console.log(`Decrypted: "${decryption}"`);
+                console.log(`Valid words: ${validation.percentage.toFixed(1)}%`);
+            }
+            
+            // Progress update
+            if ((i + 1) % progressInterval === 0) {
+                console.log(`Tested ${i + 1} known keys (${((i + 1) / this.knownKeys.length * 100).toFixed(1)}%)...`);
+            }
+        }
+        
+        return candidates;
+    }
+
+    /**
+     * Modified breakVigenere function that includes trying known keys from vk.json
      */
     async breakVigenere(ciphertext) {
         console.log("Initializing dictionary set...");
         const dictionarySet = this.createDictionarySet();
+        
+        // Step 0: Try known keys from VK.json
+        console.log("Step 0: Trying known keys from VK.json...");
+        const knownKeyCandidates = this.tryKnownKeys(ciphertext);
         
         console.log("Step 1: Trying dictionary attack...");
         const candidates = [];
@@ -605,105 +695,26 @@ export class VigenereBreaker {
             }
         }
         
+        // Combine known key candidates with dictionary candidates
+        const allCandidates = [...knownKeyCandidates, ...candidates];
+        
         // Sort candidates by score and validation percentage
-        candidates.sort((a, b) => {
+        allCandidates.sort((a, b) => {
             if (a.validation.isValid && !b.validation.isValid) return -1;
             if (!a.validation.isValid && b.validation.isValid) return 1;
             return b.score - a.score;
         });
         
         // Check if we found any valid solutions
-        const validCandidates = candidates.filter(c => c.validation.isValid);
+        const validCandidates = allCandidates.filter(c => c.validation.isValid);
         if (validCandidates.length > 0) {
             console.log("\nFound valid solutions without need for refinement!");
             return validCandidates[0];
         }
         
-        // Check if dictionary attack was successful
-        const bestDictionaryCandidate = candidates[0];
-        const dictionaryAttackSuccessful = bestDictionaryCandidate.score > 700 && 
-                                         bestDictionaryCandidate.validation.percentage > 70;
+        // Continue with the rest of the original code...
         
-        if (!dictionaryAttackSuccessful) {
-            console.log("\nDictionary attack unsuccessful. Switching to systematic key search...");
-            
-            // Estimate likely key lengths
-            const likelyLengths = this.estimateKeyLength(ciphertext);
-            console.log(`Estimated likely key lengths: ${likelyLengths.slice(0, 3).join(', ')}...`);
-            
-            // Try systematic key generation for most likely lengths
-            const systematicCandidates = [];
-            const maxTriesPerLength = 10000; // Limit tries to prevent infinite loops
-            let totalTries = 0;
-            
-            for (const length of likelyLengths.slice(0, 3)) { // Try top 3 likely lengths
-                console.log(`\nTrying systematic keys of length ${length}...`);
-                let triesForThisLength = 0;
-                
-                // Start with variations of best dictionary candidates
-                const baseKeys = candidates
-                    .slice(0, 3)
-                    .map(c => c.key)
-                    .filter(k => Math.abs(k.length - length) <= 2);
-                
-                for (const baseKey of baseKeys) {
-                    for (const key of this.generateSystematicKeys(length, baseKey)) {
-                        const decryption = this.decryptVigenere(ciphertext, key);
-                        const validation = this.validateDecryptedText(decryption, dictionarySet);
-                        const score = this.scoreText(decryption);
-                        
-                        systematicCandidates.push({
-                            key,
-                            decrypted: decryption,
-                            score,
-                            validation,
-                            method: 'systematic'
-                        });
-                        
-                        triesForThisLength++;
-                        totalTries++;
-                        
-                        if (totalTries % 500 === 0) {
-                            console.log(`Tried ${totalTries} systematic keys...`);
-                        }
-                        
-                        // Stop if we find a very good candidate
-                        if (score > 800 && validation.percentage > 80) {
-                            console.log(`Found promising systematic key: ${key}`);
-                            break;
-                        }
-                        
-                        if (triesForThisLength >= maxTriesPerLength) break;
-                    }
-                    
-                    if (triesForThisLength >= maxTriesPerLength) break;
-                }
-            }
-            
-            // Combine and sort all candidates
-            const allCandidates = [...systematicCandidates, ...candidates];
-            allCandidates.sort((a, b) => b.score - a.score);
-            
-            // Display results
-            console.log("\nTop 10 potential keys (including systematic search):");
-            console.log("===============================================");
-            
-            for (let i = 0; i < Math.min(10, allCandidates.length); i++) {
-                const candidate = allCandidates[i];
-                console.log(`${i+1}. Key: "${candidate.key}" (${candidate.method || 'dictionary'})`);
-                console.log(`   Score: ${candidate.score.toFixed(2)}`);
-                console.log(`   Valid words: ${candidate.validation.percentage.toFixed(1)}%`);
-                if (!candidate.validation.isValid) {
-                    console.log(`   Invalid words: ${candidate.validation.invalidWords.join(', ')}`);
-                }
-                console.log(`   Decrypted: "${candidate.decrypted}"`);
-                console.log();
-            }
-            
-            return allCandidates[0];
-        }
-        
-        // If dictionary attack was successful, continue with original code
-        // ... [Rest of the original code remains the same]
+        // Return the best candidate
+        return allCandidates[0];
     }
 }
